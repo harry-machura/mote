@@ -1,0 +1,47 @@
+# Build directories
+build
+builds
+Build
+BUILD
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles
+cmake_install.cmake
+Makefile
+.cmake
+
+# Compiled binaries
+.exe
+.dll
+.so
+.dylib
+.a
+.lib
+
+# Object files
+.o
+.obj
+
+# Visual Studio specific
+.vs
+.vcxproj.user
+.sln.docstates
+.suo
+.user
+.userosscache
+.sln.docstates
+x64
+x86
+Debug
+Release
+
+# Temporary files
+.tmp
+.temp
+~
+
+# OS specific
+.DS_Store
+Thumbs.db
+desktop.ini
