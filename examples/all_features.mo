@@ -1,8 +1,13 @@
-func main() {
-  let a = 5;
-  if (a > 3) {
-    print_int(111);
-  } else {
-    print_int(222);
+func sum_loop(limit) {
+  let sum = 0;
+  for (let i = 0; i < limit; i = i + 1) {
+    if (i == 5) {
+      continue;
+    }
+    if (i == 8) {
+      break;
+    }
+    sum = sum + i;
   }
+  return sum;
 }

@@ -133,31 +133,29 @@ void parse_while(P* p) {
 }
 
 void parse_break(P* p) {
+    expect(&p->L, T_BREAK);
     if (p->bc_sp <= 0) {
-        fprintf(stderr, "break außerhalb von Loop/Switch\n");
+        fprintf(stderr, "break außerhalb einer Schleife\n");
         return;
     }
-    int jmp = p->out->len;
+    int patch_pc = p->out->len;
     emit_op(p->out, OP_JMP);
-    emiti32(p->out, 0);
-
-    // sofort patchen: break springt zum gespeicherten Endlabel
-    int target = p->break_stack[p->bc_sp-1];
-    unsigned char* buf = &p->out->data[jmp+1];
-    buf[0] = (target & 0xFF);
-    buf[1] = (target >> 8) & 0xFF;
-    buf[2] = (target >> 16) & 0xFF;
-    buf[3] = (target >> 24) & 0xFF;
+    emiti32(p->out, 0); // Patch später
+    p->break_stack[p->bc_sp - 1] = patch_pc;
 }
+
 
 void parse_continue(P* p) {
+    expect(&p->L, T_CONTINUE);
     if (p->bc_sp <= 0) {
-        fprintf(stderr, "continue außerhalb von Loop\n");
+        fprintf(stderr, "continue außerhalb einer Schleife\n");
         return;
     }
+    int target = p->continue_stack[p->bc_sp - 1];
     emit_op(p->out, OP_JMP);
-    emiti32(p->out, p->continue_stack[p->bc_sp-1]);
+    emiti32(p->out, target);
 }
+
 
 void parse_import(P* p) {
     expect(&p->L, T_IMPORT);
@@ -169,6 +167,52 @@ void parse_import(P* p) {
         fprintf(stderr, "import erwartet Identifier\n");
     }
 }
+
+static void parse_assignment_or_call_expr(P* p) {
+    if (p->L.cur.t == T_IDENT) {
+        const char* name = p->L.cur.s;
+        advance(&p->L);
+        if (p->L.cur.t == T_ASSIGN) {
+            advance(&p->L);
+            parse_expr(p);
+            uint8_t slot = sym_get_slot(&p->syms, name);
+            emit_op(p->out, OP_STOREL);
+            emit8(p->out, slot);
+            return;
+        } else if (p->L.cur.t == T_LPAREN) {
+            parse_call_and_emit(p, name);
+            return;
+        } else {
+            uint8_t slot = sym_get_slot(&p->syms, name);
+            emit_op(p->out, OP_LOADL);
+            emit8(p->out, slot);
+            return;
+        }
+    }
+    parse_expr(p);
+}
+
+void parse_let_stmt(P* p) {
+    expect(&p->L, T_LET);
+    if (p->L.cur.t != T_IDENT) {
+        fprintf(stderr, "let: Variablenname erwartet\n");
+        exit(2);
+    }
+    char name[64];
+    strncpy(name, p->L.cur.s, sizeof(name));
+    name[63] = 0;
+    advance(&p->L);
+
+    expect(&p->L, T_ASSIGN);
+    parse_expr(p);
+
+    uint8_t slot = sym_get_slot(&p->syms, name);
+    emit_op(p->out, OP_STOREL);
+    emit8(p->out, slot);
+
+    expect(&p->L, T_SEMI);
+}
+
 
 void parse_assignment_or_call_stmt(P* p) {
     if (p->L.cur.t == T_IDENT) {
@@ -192,67 +236,67 @@ void parse_assignment_or_call_stmt(P* p) {
     expect(&p->L, T_SEMI);
 }
 
+// Neuer parse_for: unterstützt init ; cond ; post
 void parse_for(P* p) {
     expect(&p->L, T_FOR);
     expect(&p->L, T_LPAREN);
 
-    // --- Initialisierung ---
-    if (p->L.cur.t == T_LET) {
-        // Deklaration erlaubt: for (let i = 0; ...
-        advance(&p->L);
-        if (p->L.cur.t != T_IDENT) {
-            fprintf(stderr, "for: erwartet Variablennamen nach let\n");
-            return;
-        }
-        const char* name = p->L.cur.s;
-        advance(&p->L);
-        expect(&p->L, T_ASSIGN);
-        parse_expr(p);
-        expect(&p->L, T_SEMI);
-        uint8_t slot = sym_get_slot(&p->syms, name);
-        emit_op(p->out, OP_STOREL);
-        emit8(p->out, slot);
-    } else if (p->L.cur.t != T_SEMI) {
-        // normale Zuweisung: i = 0;
-        parse_assignment_or_call_stmt(p);
-    } else {
-        // kein Init
-        expect(&p->L, T_SEMI);
-    }
-
-    // --- Bedingung ---
-    int cond_start = p->out->len;
+    // --- Init ---
     if (p->L.cur.t != T_SEMI) {
-        parse_expr(p);
-    } else {
-        // leere Bedingung gilt als true
-        emit_op(p->out, OP_PUSHI);
-        emiti32(p->out, 1);
+        if (p->L.cur.t == T_LET) {
+            advance(&p->L);
+            if (p->L.cur.t != T_IDENT) {
+                fprintf(stderr, "for: Variablenname erwartet\n");
+                exit(2);
+            }
+            char name[64];
+            strncpy(name, p->L.cur.s, sizeof(name));
+            name[63] = 0;
+            advance(&p->L);
+            expect(&p->L, T_ASSIGN);
+            parse_expr(p); // Startwert
+            uint8_t slot = sym_get_slot(&p->syms, name);
+            emit_op(p->out, OP_STOREL);
+            emit8(p->out, slot);
+        } else {
+            // HIER: Expr statt Stmt
+            parse_assignment_or_call_expr(p);
+        }
     }
     expect(&p->L, T_SEMI);
 
-    int jz_end = p->out->len;
-    emit_op(p->out, OP_JZ);
-    emiti32(p->out, 0);
 
-    // --- Post-Anweisung merken ---
-    int post_pos = p->L.cur.t != T_RPAREN ? p->L.i : -1;
-    char post_buf[128];
-    if (p->L.cur.t != T_RPAREN) {
-        // wir nehmen den Identifier für i = i + 1
-        if (p->L.cur.t == T_IDENT) {
-            strncpy(post_buf, p->L.cur.s, sizeof(post_buf));
-            post_buf[sizeof(post_buf)-1] = 0;
-        }
-        // alles bis ')' überspringen
-        while (p->L.cur.t != T_RPAREN && p->L.cur.t != T_EOF) {
-            advance(&p->L);
-        }
+    // --- Cond ---
+    int cond_pc = p->out->len;
+    if (p->L.cur.t != T_SEMI) {
+        parse_expr(p);
+    } else {
+        emit_op(p->out, OP_PUSHI);
+        emiti32(p->out, 1); // true
     }
+    expect(&p->L, T_SEMI);
+
+    // Jump raus, wenn false
+    int jz_pc = p->out->len;
+    emit_op(p->out, OP_JZ);
+    emiti32(p->out, 0); // Patch später
+
+    // --- Post vorbereiten ---
+    int post_start = -1, post_len = 0;
+    if (p->L.cur.t != T_RPAREN) {
+    int save_pc = p->out->len;
+    parse_assignment_or_call_expr(p); // <- statt parse_assignment_or_call_stmt
+    post_start = save_pc;
+    post_len = p->out->len - save_pc;
+    p->out->len = save_pc; // verwerfen, später einfügen
+}
+
+
+
     expect(&p->L, T_RPAREN);
 
     // --- Body ---
-    bc_push(p, jz_end, cond_start);
+    bc_push(p, jz_pc, cond_pc);
     expect(&p->L, T_LBRACE);
     while (p->L.cur.t != T_RBRACE && p->L.cur.t != T_EOF) {
         parse_stmt(p);
@@ -260,24 +304,25 @@ void parse_for(P* p) {
     expect(&p->L, T_RBRACE);
     bc_pop(p);
 
-    // --- Post (z. B. i = i + 1) ---
-    if (post_pos >= 0) {
-        // hier könntest du später den Post-Teil richtig parsen
-        // fürs Erste: noop
+    // --- Post-Teil wieder einfügen ---
+    if (post_start >= 0 && post_len > 0) {
+        buf_append(p->out, p->out->data + post_start, post_len);
     }
 
-    // zurück zum Anfang
+    // --- Zurück zur Condition ---
     emit_op(p->out, OP_JMP);
-    emiti32(p->out, cond_start);
+    emiti32(p->out, cond_pc);
 
-    // --- Sprung hinter die Schleife patchen ---
-    int pc = p->out->len;
-    unsigned char* buf = &p->out->data[jz_end+1];
-    buf[0] = (pc & 0xFF);
-    buf[1] = (pc >> 8) & 0xFF;
-    buf[2] = (pc >> 16) & 0xFF;
-    buf[3] = (pc >> 24) & 0xFF;
+    // --- Patch JZ ---
+    int end_pc = p->out->len;
+    unsigned char* buf = &p->out->data[jz_pc + 1];
+    buf[0] = (end_pc & 0xFF);
+    buf[1] = (end_pc >> 8) & 0xFF;
+    buf[2] = (end_pc >> 16) & 0xFF;
+    buf[3] = (end_pc >> 24) & 0xFF;
 }
+
+
 
 
 void parse_do_while(P* p) {

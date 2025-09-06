@@ -8,8 +8,8 @@
 #include "motec_additions.h"
 
 // ---- Bytebuffer Funktionen ----
-static void buf_init(Buf *b){ b->data=NULL; b->len=0; b->cap=0; }
-static void buf_res(Buf *b, size_t need){
+void buf_init(Buf *b){ b->data=NULL; b->len=0; b->cap=0; }
+void buf_res(Buf *b, size_t need){
     if (need>b->cap){
         size_t nc = b->cap? b->cap*2:256;
         while(nc<need) nc*=2;
@@ -17,6 +17,26 @@ static void buf_res(Buf *b, size_t need){
         b->cap=nc;
     }
 }
+
+void buf_copy(Buf* dst, Buf* src, size_t offset, size_t length) {
+    buf_res(dst, dst->len + length);
+    memcpy(dst->data + dst->len, src->data + offset, length);
+    dst->len += length;
+}
+
+void buf_append(Buf* dst, const uint8_t* data, size_t length) {
+    buf_res(dst, dst->len + length);
+    memcpy(dst->data + dst->len, data, length);
+    dst->len += length;
+}
+
+void buf_free(Buf* b) {
+    free(b->data);
+    b->data = NULL;
+    b->len = 0;
+    b->cap = 0;
+}
+
 void emit8(Buf*b, uint8_t v){ buf_res(b, b->len+1); b->data[b->len++]=v; }
 void emiti32(Buf*b, int32_t v){ buf_res(b, b->len+4); memcpy(b->data+b->len,&v,4); b->len+=4; }
 static void patch_i32(Buf*b, size_t at, int32_t v){ memcpy(b->data+at,&v,4); }
@@ -69,26 +89,33 @@ static Tok lex_next(Lex *L){
         while (L->i<L->n && isdigit((unsigned char)L->src[L->i])) v=v*10+(L->src[L->i++]-'0');
         out.t=T_NUMBER; out.ival=v; return out;
     }
-    if (is_ident_start((unsigned char)c)){
-        size_t k=0; out.s[k++]=c;
-        while (L->i<L->n && is_ident_body((unsigned char)L->src[L->i]) && k+1<sizeof(out.s)) out.s[k++]=L->src[L->i++];
-        out.s[k]=0;
-        if (!strcmp(out.s,"func")){ out.t=T_FUNC; return out; }
-        if (!strcmp(out.s,"return")){ out.t=T_RETURN; return out; }
-        if (!strcmp(out.s,"if")){ out.t=T_IF; return out; }
-        if (!strcmp(out.s,"else")){ out.t=T_ELSE; return out; }
-        if (!strcmp(out.s,"while")){ out.t=T_WHILE; return out; }
-        if (!strcmp(out.s,"for")){ out.t=T_FOR; return out; }
-        if (!strcmp(out.s,"do")){ out.t=T_DO; return out; }
-        if (!strcmp(out.s,"switch")){ out.t=T_SWITCH; return out; }
-        if (!strcmp(out.s,"case")){ out.t=T_CASE; return out; }
-        if (!strcmp(out.s,"default")){ out.t=T_DEFAULT; return out; }
-        if (!strcmp(out.s,"break")){ out.t=T_BREAK; return out; }
-        if (!strcmp(out.s,"continue")){ out.t=T_CONTINUE; return out; }
-        if (!strcmp(out.s,"import")){ out.t=T_IMPORT; return out; }
-        if (!strcmp(out.s,"let")){ out.t=T_LET; return out; }
-        out.t=T_IDENT; return out;
+    if (is_ident_start((unsigned char)c)) {
+    size_t k=0; out.s[k++]=c;
+    while (L->i<L->n && is_ident_body((unsigned char)L->src[L->i]) && k+1<sizeof(out.s)) {
+        out.s[k++]=L->src[L->i++];
     }
+    out.s[k]=0;
+
+    if (!strcmp(out.s,"func"))    { out.t=T_FUNC; return out; }
+    if (!strcmp(out.s,"return"))  { out.t=T_RETURN; return out; }
+    if (!strcmp(out.s,"if"))      { out.t=T_IF; return out; }
+    if (!strcmp(out.s,"else"))    { out.t=T_ELSE; return out; }
+    if (!strcmp(out.s,"while"))   { out.t=T_WHILE; return out; }
+    if (!strcmp(out.s,"for"))     { out.t=T_FOR; return out; }
+    if (!strcmp(out.s,"do"))      { out.t=T_DO; return out; }
+    if (!strcmp(out.s,"switch"))  { out.t=T_SWITCH; return out; }
+    if (!strcmp(out.s,"case"))    { out.t=T_CASE; return out; }
+    if (!strcmp(out.s,"default")) { out.t=T_DEFAULT; return out; }
+    if (!strcmp(out.s,"break"))   { out.t=T_BREAK; return out; }
+    if (!strcmp(out.s,"continue")){ out.t=T_CONTINUE; return out; }
+    if (!strcmp(out.s,"import"))  { out.t=T_IMPORT; return out; }
+    if (!strcmp(out.s,"let"))     { out.t=T_LET; return out; }
+
+    // sonst ist es ein Identifier
+    out.t=T_IDENT; 
+    return out;
+}
+
     fprintf(stderr,"Lex-Fehler: %c\n",c); exit(2);
 }
 
@@ -146,6 +173,7 @@ void parse_stmt(P*p){
         case T_BREAK: parse_break(p); expect(&p->L, T_SEMI); return;
         case T_CONTINUE: parse_continue(p); expect(&p->L, T_SEMI); return;
         case T_IMPORT: parse_import(p); expect(&p->L, T_SEMI); return;
+        case T_LET: parse_let_stmt(p); return;
     }
 
     if(match(&p->L,T_LBRACE)){ while(!match(&p->L,T_RBRACE)) parse_stmt(p); return; }
@@ -193,15 +221,26 @@ void parse_stmt(P*p){
     }
 
     // Variablenzuweisung
-    if(p->L.cur.t==T_IDENT && !strcmp(p->L.cur.s,"let")){
-        advance(&p->L);
-        if(p->L.cur.t!=T_IDENT){ fprintf(stderr,"Variablenname erwartet.\n"); exit(2); }
-        char name[64]; strncpy(name,p->L.cur.s,sizeof(name)); name[63]=0; advance(&p->L);
-        expect(&p->L,T_ASSIGN);
-        parse_expr(p);
-        { uint8_t slot=sym_get_slot(&p->syms,name); emit_op(p->out,OP_STOREL); emit8(p->out,slot); }
-        expect(&p->L,T_SEMI); return;
+    // Variablendeklaration mit let
+if (p->L.cur.t == T_LET) {
+    advance(&p->L); // über "let"
+    if (p->L.cur.t != T_IDENT) {
+        fprintf(stderr, "Variablenname erwartet.\n");
+        exit(2);
     }
+    char name[64];
+    strncpy(name, p->L.cur.s, sizeof(name));
+    name[63] = 0;
+    advance(&p->L);
+    expect(&p->L, T_ASSIGN);
+    parse_expr(p);
+    uint8_t slot = sym_get_slot(&p->syms, name);
+    emit_op(p->out, OP_STOREL);
+    emit8(p->out, slot);
+    expect(&p->L, T_SEMI);
+    return;
+}
+
 
     // Standard-Ausdruck
     parse_expr(p); expect(&p->L,T_SEMI);
@@ -299,6 +338,12 @@ void parse_call_and_emit(P*p,const char*name){
     if(!strcmp(name,"gpio_write")){ emit_op(p->out,OP_CALL); emit8(p->out,1); return; }
     if(!strcmp(name,"sleep_ms")){ emit_op(p->out,OP_CALL); emit8(p->out,2); return; }
     if(!strcmp(name,"gpio_read")){ emit_op(p->out,OP_CALL); emit8(p->out,3); return; }
+    if(!strcmp(name,"print_int")) {
+        emit_op(p->out, OP_CALL);
+        emit8(p->out, 4);   // neuer Index, muss mit Host übereinstimmen
+        return;
+    }
+
 
     fprintf(stderr,"Unbekannte Funktion: %s\n",name); exit(2);
 }
