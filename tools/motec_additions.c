@@ -33,21 +33,22 @@ static void parse_file_into(P* p, const char* path) {
 }
 
 // ===== Break/Continue Stack Helpers =====
-static void bc_push(P* p, int break_target, int continue_target) {
+static void bc_push(P* p, int break_target_unused, int continue_target) {
     if (p->bc_sp < 64) {
-        p->break_stack[p->bc_sp] = break_target;
-        p->continue_stack[p->bc_sp] = continue_target;
+        p->break_stack[p->bc_sp]    = -1;              // Kopf der break-Patchkette
+        p->continue_stack[p->bc_sp] = continue_target; // Ziel für continue
         p->bc_sp++;
     }
 }
 
-static void bc_pop(P* p) {
-    if (p->bc_sp > 0) p->bc_sp--;
-}
+static void bc_pop(P* p) { if (p->bc_sp > 0) p->bc_sp--; }
+
+static inline int32_t read_i32(Buf* b, size_t at){ int32_t v; memcpy(&v,b->data+at,4); return v; }
+static inline void    write_i32(Buf* b, size_t at, int32_t v){ memcpy(b->data+at,&v,4); }
 
 // ===== Kontrollstrukturen =====
 void parse_if(P* p) {
-    expect(&p->L, T_IF);
+    //expect(&p->L, T_IF);
     expect(&p->L, T_LPAREN);
     parse_expr(p);
     expect(&p->L, T_RPAREN);
@@ -100,9 +101,14 @@ void parse_if(P* p) {
 }
 
 void parse_while(P* p) {
-    expect(&p->L, T_WHILE);
+    printf("DEBUG: parse_while() gestartet, aktuelles Token: %d ('%s')\n", 
+           p->L.cur.t, p->L.cur.s);
+    
     int loop_start = p->out->len;
-
+    
+    printf("DEBUG: Erwarte LPAREN, aktuelles Token: %d ('%s')\n", 
+           p->L.cur.t, p->L.cur.s);
+    
     expect(&p->L, T_LPAREN);
     parse_expr(p);
     expect(&p->L, T_RPAREN);
@@ -133,15 +139,12 @@ void parse_while(P* p) {
 }
 
 void parse_break(P* p) {
-    //expect(&p->L, T_BREAK);
-    if (p->bc_sp <= 0) {
-        fprintf(stderr, "break außerhalb einer Schleife\n");
-        return;
-    }
+    if (p->bc_sp <= 0) { fprintf(stderr,"break außerhalb einer Schleife\n"); return; }
+    int head = p->break_stack[p->bc_sp - 1];
     int patch_pc = p->out->len;
     emit_op(p->out, OP_JMP);
-    emiti32(p->out, 0); // Patch später
-    p->break_stack[p->bc_sp - 1] = patch_pc;
+    emiti32(p->out, head);                 // next = alter Kopf
+    p->break_stack[p->bc_sp - 1] = patch_pc; // neuer Kopf
 }
 
 
@@ -158,7 +161,6 @@ void parse_continue(P* p) {
 
 
 void parse_import(P* p) {
-    expect(&p->L, T_IMPORT);
     if (p->L.cur.t == T_IDENT) {
         const char* id = p->L.cur.s;
         parse_file_into(p, id);
@@ -193,7 +195,7 @@ static void parse_assignment_or_call_expr(P* p) {
 }
 
 void parse_let_stmt(P* p) {
-    expect(&p->L, T_LET);
+     // 'let' wurde in motec.c bereits via advance() konsumiert
     if (p->L.cur.t != T_IDENT) {
         fprintf(stderr, "let: Variablenname erwartet\n");
         exit(2);
@@ -238,7 +240,7 @@ void parse_assignment_or_call_stmt(P* p) {
 
 // Neuer parse_for: unterstützt init ; cond ; post
 void parse_for(P* p) {
-    expect(&p->L, T_FOR);
+    // 'for' wurde in parse_stmt() bereits via advance() konsumiert
     expect(&p->L, T_LPAREN);
 
     // --- Init ---
@@ -259,12 +261,11 @@ void parse_for(P* p) {
             emit_op(p->out, OP_STOREL);
             emit8(p->out, slot);
         } else {
-            // HIER: Expr statt Stmt
+            // Expr statt Stmt (keine Semikolon-Pflicht hier)
             parse_assignment_or_call_expr(p);
         }
     }
     expect(&p->L, T_SEMI);
-
 
     // --- Cond ---
     int cond_pc = p->out->len;
@@ -284,25 +285,24 @@ void parse_for(P* p) {
     // --- Post vorbereiten ---
     int post_start = -1, post_len = 0;
     if (p->L.cur.t != T_RPAREN) {
-    int save_pc = p->out->len;
-    parse_assignment_or_call_expr(p); // <- statt parse_assignment_or_call_stmt
-    post_start = save_pc;
-    post_len = p->out->len - save_pc;
-    p->out->len = save_pc; // verwerfen, später einfügen
-}
-
-
+        int save_pc = p->out->len;
+        parse_assignment_or_call_expr(p); // kein Semikolon
+        post_start = save_pc;
+        post_len   = p->out->len - save_pc;
+        p->out->len = save_pc; // verwerfen, später wieder einfügen
+    }
 
     expect(&p->L, T_RPAREN);
 
     // --- Body ---
+    // continue -> zurück zur Bedingung (vereinfachte Semantik)
     bc_push(p, jz_pc, cond_pc);
+
     expect(&p->L, T_LBRACE);
     while (p->L.cur.t != T_RBRACE && p->L.cur.t != T_EOF) {
         parse_stmt(p);
     }
     expect(&p->L, T_RBRACE);
-    bc_pop(p);
 
     // --- Post-Teil wieder einfügen ---
     if (post_start >= 0 && post_len > 0) {
@@ -320,7 +320,19 @@ void parse_for(P* p) {
     buf[1] = (end_pc >> 8) & 0xFF;
     buf[2] = (end_pc >> 16) & 0xFF;
     buf[3] = (end_pc >> 24) & 0xFF;
+
+    // --- NEU: gesamte 'break'-Kette auf end_pc patchen
+    int cur = p->break_stack[p->bc_sp - 1];
+    while (cur != -1) {
+        int next = read_i32(p->out, cur + 1); // alten 'next' lesen
+        write_i32(p->out, cur + 1, end_pc);   // jetzt auf Endadresse zeigen lassen
+        cur = next;
+    }
+
+    // Nur einmal poppen — nach allem Patchen
+    bc_pop(p);
 }
+
 
 
 

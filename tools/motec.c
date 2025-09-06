@@ -129,10 +129,11 @@ static Tok lex_next(Lex *L){
 static void lex_init(Lex *L,const char*src){ L->src=src; L->i=0; L->n=strlen(src); L->cur.t=T_EOF; }
 void advance(Lex *L){ L->cur=lex_next(L); }
 int match(Lex*L,TokType t){ if(L->cur.t==t){ advance(L); return 1;} return 0; }
+
 void expect(Lex*L,TokType t){
     if(!match(L,t)){
-        fprintf(stderr,"Syntaxfehler: Erwartet %d, bekam %d (Token='%s')\n",
-            t, L->cur.t, L->cur.s);
+        fprintf(stderr,"Syntaxfehler: Erwartet %d (%s), bekam %d ('%s')\n",
+            t, "???", L->cur.t, L->cur.s);  // <-- Mehr Debug-Info
         exit(2);
     }
 }
@@ -172,28 +173,28 @@ static void parse_block(P*p){
 
 void parse_stmt(P*p){
     switch(p->L.cur.t){
-        case T_IF: parse_if(p); return;
-        case T_WHILE: parse_while(p); return;
-        case T_FOR: parse_for(p); return;
-        case T_DO: parse_do_while(p); return;
-        case T_SWITCH: parse_switch(p); return;
-        case T_BREAK: parse_break(p); expect(&p->L, T_SEMI); return;
-        case T_CONTINUE: parse_continue(p); expect(&p->L, T_SEMI); return;
-        case T_IMPORT: parse_import(p); expect(&p->L, T_SEMI); return;
-        case T_LET: parse_let_stmt(p); return;
+        case T_IF: advance(&p->L); parse_if(p); return;
+        case T_WHILE: advance(&p->L); parse_while(p); return;
+        case T_FOR: advance(&p->L); parse_for(p); return;
+        case T_DO: advance(&p->L); parse_do_while(p); return;
+        case T_SWITCH: advance(&p->L); parse_switch(p); return;
+        case T_BREAK: advance(&p->L); parse_break(p); expect(&p->L, T_SEMI); return;
+        case T_CONTINUE: advance(&p->L); parse_continue(p); expect(&p->L, T_SEMI); return;
+        case T_IMPORT: advance(&p->L); parse_import(p); expect(&p->L, T_SEMI); return;
+        case T_LET: advance(&p->L); parse_let_stmt(p); return;
     }
 
     if(match(&p->L,T_LBRACE)){ while(!match(&p->L,T_RBRACE)) parse_stmt(p); return; }
 
     // Funktionsdefinition
     if(p->L.cur.t==T_FUNC){
-        advance(&p->L); // springe über "func"
+        advance(&p->L);
         if(p->L.cur.t != T_IDENT){
             fprintf(stderr,"Funktionsname erwartet.\n"); 
             exit(2);
         }
         char fname[64]; strncpy(fname,p->L.cur.s,sizeof(fname)); fname[63]=0;
-        advance(&p->L); // über Namen
+        advance(&p->L);
         expect(&p->L,T_LPAREN);
         int params=0;
         while(p->L.cur.t==T_IDENT){
@@ -214,40 +215,24 @@ void parse_stmt(P*p){
         }
         parse_block(p);
         emit_op(p->out,OP_RET);
-        match(&p->L, T_SEMI); // optional
+        match(&p->L, T_SEMI);
         return;
     }
 
     // return
     if(p->L.cur.t==T_RETURN){
         advance(&p->L);
-        parse_expr(p);
+        parse_expr(p);          // <-- DAS MUSS BLEIBEN!
         expect(&p->L,T_SEMI);
         emit_op(p->out,OP_RET);
         return;
     }
 
-    // Variablenzuweisung
-    // Variablendeklaration mit let
-if (p->L.cur.t == T_LET) {
-    advance(&p->L); // über "let"
-    if (p->L.cur.t != T_IDENT) {
-        fprintf(stderr, "Variablenname erwartet.\n");
-        exit(2);
+    // NEU: Identifier = Zuweisung oder Funktionsaufruf
+    if (p->L.cur.t == T_IDENT) {
+        parse_assignment_or_call_stmt(p);
+        return;
     }
-    char name[64];
-    strncpy(name, p->L.cur.s, sizeof(name));
-    name[63] = 0;
-    advance(&p->L);
-    expect(&p->L, T_ASSIGN);
-    parse_expr(p);
-    uint8_t slot = sym_get_slot(&p->syms, name);
-    emit_op(p->out, OP_STOREL);
-    emit8(p->out, slot);
-    expect(&p->L, T_SEMI);
-    return;
-}
-
 
     // Standard-Ausdruck
     parse_expr(p); expect(&p->L,T_SEMI);
