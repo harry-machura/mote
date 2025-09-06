@@ -81,8 +81,16 @@ static Tok lex_next(Lex *L){
         case '<': if (L->i<L->n && L->src[L->i]=='='){ L->i++; out.t=T_LE; } else out.t=T_LT; return out;
         case '>': if (L->i<L->n && L->src[L->i]=='='){ L->i++; out.t=T_GE; } else out.t=T_GT; return out;
         case '!': if (L->i<L->n && L->src[L->i]=='='){ L->i++; out.t=T_NEQ; } else out.t=T_BANG; return out;
-        case '&': if (L->i<L->n && L->src[L->i]=='&'){ L->i++; out.t=T_ANDAND; return out; }
-        case '|': if (L->i<L->n && L->src[L->i]=='|'){ L->i++; out.t=T_OROR; return out; }
+        case '&': 
+            if (L->i<L->n && L->src[L->i]=='&'){ 
+                L->i++; out.t=T_ANDAND; return out; 
+            }
+            fprintf(stderr,"Lex-Fehler: unerwartetes &\n"); exit(2);
+        case '|': 
+            if (L->i<L->n && L->src[L->i]=='|'){ 
+                L->i++; out.t=T_OROR; return out; 
+            }
+            fprintf(stderr,"Lex-Fehler: unerwartetes |\n"); exit(2);
     }
     if (isdigit((unsigned char)c)){
         int v=c-'0';
@@ -90,35 +98,34 @@ static Tok lex_next(Lex *L){
         out.t=T_NUMBER; out.ival=v; return out;
     }
     if (is_ident_start((unsigned char)c)) {
-    size_t k=0; out.s[k++]=c;
-    while (L->i<L->n && is_ident_body((unsigned char)L->src[L->i]) && k+1<sizeof(out.s)) {
-        out.s[k++]=L->src[L->i++];
+        size_t k=0; out.s[k++]=c;
+        while (L->i<L->n && is_ident_body((unsigned char)L->src[L->i]) && k+1<sizeof(out.s)) {
+            out.s[k++]=L->src[L->i++];
+        }
+        out.s[k]=0;
+        
+        if (!strcmp(out.s,"func"))    { out.t=T_FUNC; return out; }
+        if (!strcmp(out.s,"return"))  { out.t=T_RETURN; return out; }
+        if (!strcmp(out.s,"if"))      { out.t=T_IF; return out; }
+        if (!strcmp(out.s,"else"))    { out.t=T_ELSE; return out; }
+        if (!strcmp(out.s,"while"))   { out.t=T_WHILE; return out; }
+        if (!strcmp(out.s,"for"))     { out.t=T_FOR; return out; }
+        if (!strcmp(out.s,"do"))      { out.t=T_DO; return out; }
+        if (!strcmp(out.s,"switch"))  { out.t=T_SWITCH; return out; }
+        if (!strcmp(out.s,"case"))    { out.t=T_CASE; return out; }
+        if (!strcmp(out.s,"default")) { out.t=T_DEFAULT; return out; }
+        if (!strcmp(out.s,"break"))   { out.t=T_BREAK; return out; }
+        if (!strcmp(out.s,"continue")){ out.t=T_CONTINUE; return out; }
+        if (!strcmp(out.s,"import"))  { out.t=T_IMPORT; return out; }
+        if (!strcmp(out.s,"let"))     { out.t=T_LET; return out; }
+        
+        out.t=T_IDENT; 
+        return out;
     }
-    out.s[k]=0;
-
-    if (!strcmp(out.s,"func"))    { out.t=T_FUNC; return out; }
-    if (!strcmp(out.s,"return"))  { out.t=T_RETURN; return out; }
-    if (!strcmp(out.s,"if"))      { out.t=T_IF; return out; }
-    if (!strcmp(out.s,"else"))    { out.t=T_ELSE; return out; }
-    if (!strcmp(out.s,"while"))   { out.t=T_WHILE; return out; }
-    if (!strcmp(out.s,"for"))     { out.t=T_FOR; return out; }
-    if (!strcmp(out.s,"do"))      { out.t=T_DO; return out; }
-    if (!strcmp(out.s,"switch"))  { out.t=T_SWITCH; return out; }
-    if (!strcmp(out.s,"case"))    { out.t=T_CASE; return out; }
-    if (!strcmp(out.s,"default")) { out.t=T_DEFAULT; return out; }
-    if (!strcmp(out.s,"break"))   { out.t=T_BREAK; return out; }
-    if (!strcmp(out.s,"continue")){ out.t=T_CONTINUE; return out; }
-    if (!strcmp(out.s,"import"))  { out.t=T_IMPORT; return out; }
-    if (!strcmp(out.s,"let"))     { out.t=T_LET; return out; }
-
-    // sonst ist es ein Identifier
-    out.t=T_IDENT; 
-    return out;
-}
-
-    fprintf(stderr,"Lex-Fehler: %c\n",c); exit(2);
-}
-
+    
+    fprintf(stderr,"Lex-Fehler: %c\n",c); 
+    exit(2);
+}  // <-- NUR EINE schließende Klammer!
 static void lex_init(Lex *L,const char*src){ L->src=src; L->i=0; L->n=strlen(src); L->cur.t=T_EOF; }
 void advance(Lex *L){ L->cur=lex_next(L); }
 int match(Lex*L,TokType t){ if(L->cur.t==t){ advance(L); return 1;} return 0; }
