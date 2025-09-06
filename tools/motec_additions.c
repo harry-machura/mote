@@ -133,7 +133,7 @@ void parse_while(P* p) {
 }
 
 void parse_break(P* p) {
-    expect(&p->L, T_BREAK);
+    //expect(&p->L, T_BREAK);
     if (p->bc_sp <= 0) {
         fprintf(stderr, "break außerhalb einer Schleife\n");
         return;
@@ -146,7 +146,7 @@ void parse_break(P* p) {
 
 
 void parse_continue(P* p) {
-    expect(&p->L, T_CONTINUE);
+    //expect(&p->L, T_CONTINUE);
     if (p->bc_sp <= 0) {
         fprintf(stderr, "continue außerhalb einer Schleife\n");
         return;
